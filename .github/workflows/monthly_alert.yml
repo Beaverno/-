@@ -23,8 +23,9 @@ jobs:
           pip install yfinance pandas
 
       - name: Run monthly alert
-        env:
-          QQ_EMAIL: ${{ secrets.QQ_EMAIL }}
-          QQ_PASSWORD: ${{ secrets.QQ_PASSWORD }}
+       env:
+  EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+  EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+  SMTP_PROVIDER: ${{ secrets.SMTP_PROVIDER }}
         run: |
           python monthly_momentum_alert.py
