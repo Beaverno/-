@@ -26,6 +26,5 @@ jobs:
         env:
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          SMTP_PROVIDER: ${{ secrets.SMTP_PROVIDER }}
         run: |
           python monthly_momentum_alert.py
