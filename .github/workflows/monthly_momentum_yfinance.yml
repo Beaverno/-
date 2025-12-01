@@ -63,7 +63,8 @@ jobs:
           python monthly_momentum_alert_yfinance.py
 
       - name: Upload output artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: momentum_strategy_output
           path: ./output
+
