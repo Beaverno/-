@@ -55,11 +55,9 @@ TIINGO_TOKEN = os.environ.get("TIINGO_TOKEN", "")
 EMAIL_SENDER = os.environ.get("EMAIL_ADDRESS")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
 EMAIL_RECIPIENTS = os.environ.get("EMAIL_RECIPIENT", EMAIL_SENDER).split(",") if os.environ.get("EMAIL_RECIPIENT") else ([EMAIL_SENDER] if EMAIL_SENDER else [])
-SMTP_PROVIDER = os.environ.get("SMTP_PROVIDER", "qq").lower()
+SMTP_PROVIDER = os.environ.get("SMTP_PROVIDER", "163").lower()
 
-if SMTP_PROVIDER == "qq":
-    SMTP_SERVER, SMTP_PORT = "smtp.qq.com", 465
-elif SMTP_PROVIDER == "163":
+if SMTP_PROVIDER == "163":
     SMTP_SERVER, SMTP_PORT = "smtp.163.com", 465
 elif SMTP_PROVIDER == "gmail":
     SMTP_SERVER, SMTP_PORT = "smtp.gmail.com", 465
@@ -438,3 +436,4 @@ if not trade_df.empty:
 pd.DataFrame({"mc_cagr": mc_cagrs, "mc_maxdd": mc_maxdds}).to_csv(os.path.join(out_dir,"monte_carlo.csv"), index=False)
 
 print("Finished. Files saved to", out_dir)
+
