@@ -20,6 +20,7 @@ import base64
 import traceback
 import math
 import random
+import requests
 
 # matplotlib
 matplotlib.rcParams['font.sans-serif'] = ['DejaVu Sans']
@@ -125,14 +126,15 @@ def simulate_limit_fill(limit_price, market_price, fill_prob):
 # -----------------------------
 # 下载价格数据
 # -----------------------------
-print("Downloading price data for:", TICKERS)
-data = yf.download(TICKERS, start=START_DATE, end=END_DATE, auto_adjust=True, progress=False)
-if data.empty:
-    raise RuntimeError("No data downloaded -- check tickers/network.")
-# data may be single-column price series per ticker (auto_adjust=True)
-price = data.ffill().bfill()
-# monthly price at month end
-monthly_price = price.resample("M").last()
+def tiingo_price(ticker):
+    url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
+    headers = {"Content-Type": "application/json"}
+    params = {"token": os.environ["TIINGO_TOKEN"]}
+    r = requests.get(url, headers=headers, params=params)
+    df = pd.DataFrame(r.json())
+    df["date"] = pd.to_datetime(df["date"])
+    df.set_index("date", inplace=True)
+    return df["adjClose"]
 
 # -----------------------------
 # 回测框架状态变量
@@ -537,3 +539,4 @@ pd.DataFrame({"mc_cagr": mc_cagrs, "mc_maxdd": mc_maxdds}).to_csv(os.path.join(o
 
 
 print("Finished. Files saved to", out_dir)
+
