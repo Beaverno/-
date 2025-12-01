@@ -17,7 +17,7 @@ jobs:
       EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
       EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
       EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
-      SMTP_PROVIDER: "qq"
+      SMTP_PROVIDER: "163"
       OUTPUT_DIR: "./output"
 
     steps:
