@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 # monthly_momentum_alert_optimized.py
-# 说明：高级月度动能轮动策略回测 + 下单/滑点/手续费模拟 + 波动率目标 + 蒙特卡洛压力测试
-# 依赖: yfinance, pandas, numpy, matplotlib
+# 修正版：修复 monthly_prices、Tiingo 下载、TRANSACTION_COST 定义等
 
 import os
-import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -21,6 +19,7 @@ import traceback
 import math
 import random
 import requests
+import time
 
 # matplotlib
 matplotlib.rcParams['font.sans-serif'] = ['DejaVu Sans']
@@ -41,7 +40,6 @@ LIMIT_FILL_PROB = float(os.environ.get("LIMIT_FILL_PROB", 0.7))  # 限价单初�
 LIMIT_ADVANTAGE = float(os.environ.get("LIMIT_ADVANTAGE", 0.0002)) # 限价优于市价的比例
 TARGET_VOL = float(os.environ.get("TARGET_VOL", 0.10))    # 年化目标波动率 (e.g., 0.10 = 10%)
 MAX_LEVER = float(os.environ.get("MAX_LEVER", 2.0))       # 最大放大倍数（防止过度放大）
-LOOKBACK_DAYS_12M = int(os.environ.get("LOOKBACK_DAYS_12M", 252))
 SMA_WINDOW = int(os.environ.get("SMA_WINDOW", 200))
 START_DATE = os.environ.get("START_DATE", "2005-01-01")
 END_DATE = os.environ.get("END_DATE", None)  # None -> today
@@ -72,9 +70,16 @@ else:
     SMTP_SERVER = "smtp.qq.com"
     SMTP_PORT = 465
 
+# Transaction cost summary (used for reporting)
+TRANSACTION_COST = FEE_RATE + SLIPPAGE_BASE
+
 # Safety checks
 if EMAIL_SENDER and not EMAIL_PASSWORD:
     print("WARNING: EMAIL_SENDER set but EMAIL_PASSWORD not provided. Email will fail if attempted.")
+
+TIINGO_TOKEN = os.environ.get("TIINGO_TOKEN")
+if not TIINGO_TOKEN:
+    print("WARNING: TIINGO_TOKEN not set; if you intend to use Tiingo set TIINGO_TOKEN in env.")
 
 # -----------------------------
 # 工具函数
@@ -92,12 +97,13 @@ def annualize_vol(returns_series_monthly):
     return returns_series_monthly.std() * np.sqrt(12)
 
 def cagr_from_nav(nav):
-    # nav is series indexed by date
-    n_periods = len(nav)
-    if n_periods <= 1 or nav.iloc[0] <= 0:
+    # nav is series indexed by date (normalized or absolute)
+    if len(nav) < 2 or nav.iloc[0] <= 0:
         return 0.0
     total_years = (nav.index[-1] - nav.index[0]).days / 365.25
-    return nav.iloc[-1] ** (1.0 / total_years) - 1 if nav.iloc[0] == 1.0 else (nav.iloc[-1]/nav.iloc[0])**(1.0/total_years)-1
+    if total_years <= 0:
+        return 0.0
+    return (nav.iloc[-1] / nav.iloc[0]) ** (1.0 / total_years) - 1
 
 def max_drawdown(nav):
     roll = nav.cummax()
@@ -124,20 +130,59 @@ def simulate_limit_fill(limit_price, market_price, fill_prob):
         return market_price * adverse, False
 
 # -----------------------------
-# 下载价格数据
+# Tiingo 下载（带重试、容错）
 # -----------------------------
-monthly_prices = pd.DataFrame()
-for t in TICKERS:
-    monthly_prices[t] = tiingo_price(t).resample('M').last()
-def tiingo_price(ticker):
+def tiingo_price(ticker, max_retry=4, wait_sec=2):
+    if not TIINGO_TOKEN:
+        raise RuntimeError("TIINGO_TOKEN not set in environment")
     url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
     headers = {"Content-Type": "application/json"}
-    params = {"token": os.environ["TIINGO_TOKEN"]}
-    r = requests.get(url, headers=headers, params=params)
-    df = pd.DataFrame(r.json())
-    df["date"] = pd.to_datetime(df["date"])
-    df.set_index("date", inplace=True)
-    return df["adjClose"]
+    params = {"token": TIINGO_TOKEN}
+    for attempt in range(1, max_retry+1):
+        try:
+            r = requests.get(url, headers=headers, params=params, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            if not data:
+                raise RuntimeError(f"{ticker} returned empty")
+            df = pd.DataFrame(data)
+            df["date"] = pd.to_datetime(df["date"])
+            df.set_index("date", inplace=True)
+            df = df.sort_index()
+            if "adjClose" in df.columns:
+                series = df["adjClose"].rename(ticker)
+            elif "close" in df.columns:
+                series = df["close"].rename(ticker)
+            else:
+                raise RuntimeError(f"{ticker} missing adjClose/close in Tiingo response")
+            return series
+        except Exception as e:
+            print(f"Tiingo download {ticker} failed (attempt {attempt}/{max_retry}): {e}")
+            if attempt < max_retry:
+                time.sleep(wait_sec)
+            else:
+                raise
+    raise RuntimeError(f"{ticker} download failed")
+
+# try download all tickers to build monthly_prices
+price_data = {}
+for t in TICKERS:
+    try:
+        s = tiingo_price(t)
+        price_data[t] = s
+    except Exception as e:
+        print(f"Warning: failed to download {t}: {e}")
+
+if len(price_data) == 0:
+    raise RuntimeError("No price data downloaded for any ticker. Check TIINGO_TOKEN / network / tickers.")
+
+price_df = pd.concat(price_data.values(), axis=1).rename(columns={i: i for i in price_data.keys()})
+# align columns to TICKERS order if present
+price_df = price_df.reindex(columns=[t for t in TICKERS if t in price_df.columns])
+
+# fill gaps and resample to month end
+adj_close = price_df.ffill().bfill()
+monthly_prices = adj_close.resample("ME").last()
 
 # -----------------------------
 # 回测框架状态变量
@@ -147,7 +192,7 @@ n_months = len(dates)
 nav = pd.Series(index=dates, dtype=float)
 nav.iloc[0] = START_USD
 # store holdings value dollars
-holdings_history = pd.DataFrame(0.0, index=dates, columns=TICKERS)
+holdings_history = pd.DataFrame(0.0, index=dates, columns=monthly_prices.columns)
 cash_history = pd.Series(0.0, index=dates)
 trade_log = []  # list of dicts
 
@@ -160,7 +205,12 @@ vol_rolling = asset_ret_monthly.rolling(12).std() * np.sqrt(12)
 # historical portfolio returns (for realized vol)
 portfolio_returns_hist = []
 
-last_weights = pd.Series(0.0, index=TICKERS)
+last_weights = pd.Series(0.0, index=monthly_prices.columns)
+
+# placeholders for final report variables (so exist after loop)
+selected = []
+weights = pd.Series()
+final_exposure = 0.0
 
 # -----------------------------
 # 回测主循环（按月调仓）
@@ -171,7 +221,7 @@ for i in range(1, n_months):
     prices_now = monthly_prices.loc[date]
     prices_prev = monthly_prices.loc[prev_date]
 
-    # 1) 计算多周期动能（1/3/6/12）
+    # 1) 计算多周期动能（1/3/6/12 月; 用月数）
     mom1 = (prices_now - monthly_prices.shift(1).loc[date]) / monthly_prices.shift(1).loc[date]
     mom3 = (prices_now - monthly_prices.shift(3).loc[date]) / monthly_prices.shift(3).loc[date]
     mom6 = (prices_now - monthly_prices.shift(6).loc[date]) / monthly_prices.shift(6).loc[date]
@@ -185,16 +235,13 @@ for i in range(1, n_months):
     asset_vol = vol_rolling.loc[date].fillna(vol_rolling.mean().mean())  # fallback to overall avg if NaN
 
     # 3) compute composite score (higher better)
-    # use ranks for robustness, then scale by inverse volatility to penalize high vol
     rank_m1 = mom1.rank(ascending=False, method="average")
     rank_m3 = mom3.rank(ascending=False, method="average")
     rank_m6 = mom6.rank(ascending=False, method="average")
     rank_m12 = mom12.rank(ascending=False, method="average")
     rank_acc = acc.rank(ascending=False, method="average")
 
-    # weighted rank sum
     raw_score = 0.35*rank_m1 + 0.25*rank_m3 + 0.15*rank_m6 + 0.15*rank_m12 + 0.10*rank_acc
-    # adjust by volatility (lower vol -> higher adjusted score)
     score = raw_score / (asset_vol + 1e-9)
     score = score.sort_values(ascending=False)
 
@@ -206,7 +253,7 @@ for i in range(1, n_months):
     selected = [t for t in score.index if t in eligible][:NUM_HOLD]
 
     # dynamic cash/empty threshold: if market (benchmark) short and medium term both negative => reduce exposure
-    benchmark = "SPY" if "SPY" in monthly_prices.columns else monthly_price.columns[0]
+    benchmark = "SPY" if "SPY" in monthly_prices.columns else monthly_prices.columns[0]
     bench_mom3 = (prices_now[benchmark] - monthly_prices.shift(3).loc[date][benchmark]) / monthly_prices.shift(3).loc[date][benchmark]
     bench_mom12 = (prices_now[benchmark] - monthly_prices.shift(12).loc[date][benchmark]) / monthly_prices.shift(12).loc[date][benchmark]
 
@@ -217,14 +264,13 @@ for i in range(1, n_months):
         selected = RISK_FREE
     elif bench_mom3 < 0:
         exposure_scale = 0.5  # half exposure
-    # else exposure_scale remains 1.0
 
     # if no selected, fallback to risk-free
     if len(selected) == 0:
         selected = RISK_FREE
 
     # 5) dynamic weight allocation among selected: use scores to weight
-    sel_scores = score.loc[selected]
+    sel_scores = score.loc[selected].copy()
     if sel_scores.sum() <= 0:
         weights = pd.Series(1.0/len(selected), index=selected)
     else:
@@ -234,11 +280,9 @@ for i in range(1, n_months):
         else:
             weights = raw / raw.sum()
 
-    # 6) volatility targeting: compute recent realized vol of a hypothetical equal-weight portfolio of selected
-    # compute monthly returns for selected based on last 12 months
+    # 6) volatility targeting: compute recent realized vol of selected
     hist_rets = asset_ret_monthly[selected].loc[:date].tail(12)  # months up to current
     if len(hist_rets) >= 2:
-        # approximate portfolio vol if fully invested
         port_rets = (hist_rets * weights.values).sum(axis=1)
         realized_ann_vol = np.std(port_rets) * np.sqrt(12)
     else:
@@ -248,135 +292,98 @@ for i in range(1, n_months):
     scale = 1.0
     if realized_ann_vol > 1e-9 and TARGET_VOL > 0:
         scale = TARGET_VOL / realized_ann_vol
-        # constrain scale
         if scale > MAX_LEVER:
             scale = MAX_LEVER
-    # final exposure after considering dynamic exposure_scale (market condition)
     final_exposure = exposure_scale * scale
-    if final_exposure < 0:
-        final_exposure = 0.0
+    final_exposure = max(0.0, final_exposure)
 
     # 7) determine dollar targets before costs
     prev_nav = nav.loc[prev_date]
     target_dollar_total = prev_nav * final_exposure
-    # allocate to each asset
-    target_dollars = {t: float(weights.get(t, 0.0) * target_dollar_total) for t in TICKERS}
+    target_dollars = {t: float(weights.get(t, 0.0) * target_dollar_total) for t in monthly_prices.columns}
 
-    # 8) simulate trades from last_weights to target_dollars
-    # compute current holdings value using previous prices (we track value only, not share counts)
-    # For simplicity we maintain holdings value directly and compute PnL from price changes
-    # holdings_history stores dollar value of each asset at month-ends AFTER price move and rebalancing.
-
-    # compute pre-rebalance holdings value (mark-to-market using current prices)
-    prev_hold_vals = holdings_history.loc[prev_date] if i-1 >= 0 else pd.Series(0.0, index=TICKERS)
-    # after price move to today, value changes:
+    # 8) simulate trades from previous holdings to target_dollars
+    prev_hold_vals = holdings_history.loc[prev_date] if i-1 >= 0 else pd.Series(0.0, index=monthly_prices.columns)
     mark_to_market_vals = prev_hold_vals * (prices_now / prices_prev)
     cash_before = cash_history.loc[prev_date] if i-1 >= 0 else 0.0
     portfolio_value_before = mark_to_market_vals.sum() + cash_before
 
-    # amount to trade = target - mark_to_market_vals
-    trade_amounts = {t: target_dollars.get(t, 0.0) - mark_to_market_vals.get(t, 0.0) for t in TICKERS}
-    # sum of buys and sells
+    trade_amounts = {t: target_dollars.get(t, 0.0) - mark_to_market_vals.get(t, 0.0) for t in monthly_prices.columns}
     total_buy = sum([amt for amt in trade_amounts.values() if amt > 0])
     total_sell = -sum([amt for amt in trade_amounts.values() if amt < 0])
 
     # enforce min trade size: if allocation to some asset below MIN_TRADE_USD, skip (keep as cash)
-    for t in TICKERS:
+    for t in list(trade_amounts.keys()):
         if abs(trade_amounts[t]) < MIN_TRADE_USD:
-            # small trade ignored; adjust cash/target accordingly by leaving existing holding
             trade_amounts[t] = 0.0
             target_dollars[t] = mark_to_market_vals.get(t,0.0)
 
-    # recompute totals after min trade pruning
     total_buy = sum([amt for amt in trade_amounts.values() if amt > 0])
     total_sell = -sum([amt for amt in trade_amounts.values() if amt < 0])
 
-    # compute transaction costs and simulate execution prices
-    executed_changes = {t: 0.0 for t in TICKERS}  # actual dollar change executed (positive=buy)
+    executed_changes = {t: 0.0 for t in monthly_prices.columns}
     trade_details = []
 
-    # Helper to compute execution price & effective amount after fee+slippage
     def execute_trade(ticker, dollar_amount):
-        # dollar_amount positive -> buy; negative -> sell
         market_px = prices_now[ticker]
-        # estimate annual vol for asset to compute slippage
         annual_vol = asset_vol.get(ticker, 0.2)
         slippage_pct = estimate_slippage(annual_vol)
-        executed_amount = 0.0
-        fee_total = 0.0
         if dollar_amount == 0:
             return 0.0, 0.0, market_px, False
-        # simulate limit order attempts (for buys, limit slightly better price; for sells, limit slightly better)
         if ALLOW_LIMIT_ORDERS:
-            # decide limit price advantange: buys try slightly lower price, sells try slightly higher
             sign = 1 if dollar_amount > 0 else -1
             limit_price = market_px * (1 - sign * LIMIT_ADVANTAGE)
             filled_price, filled = simulate_limit_fill(limit_price, market_px, LIMIT_FILL_PROB)
             if not filled:
-                # execute at market with adverse slippage applied
                 executed_price = market_px * (1 + np.sign(dollar_amount) * slippage_pct)
             else:
                 executed_price = filled_price
         else:
             executed_price = market_px * (1 + np.sign(dollar_amount) * slippage_pct)
 
-        # shares executed = abs(dollar_amount) / executed_price
-        shares = abs(dollar_amount) / executed_price
+        shares = abs(dollar_amount) / executed_price if executed_price != 0 else 0.0
         executed_amount = shares * executed_price * (1.0 if dollar_amount>0 else -1.0)
-        # fees proportional to traded dollar amount (absolute)
         fee = compute_fee(abs(executed_amount))
         fee_total = fee
-        # net cash impact (buy increases negative cash)
-        net_cash_impact = executed_amount + (fee_total if dollar_amount>0 else fee_total)  # fee always reduces cash
-        # For simplicity treat fee as added on top of trade amount (i.e., buyer pays amount + fee; seller receives amount - fee)
         return executed_amount, fee_total, executed_price, True
 
-    # execute sells first -> free up cash
+    # sells first
     for t, amt in trade_amounts.items():
         if amt < 0:
             executed_amt, fee_amt, exec_price, filled = execute_trade(t, amt)
-            executed_changes[t] += executed_amt  # negative
+            executed_changes[t] += executed_amt
             trade_details.append({"date": date, "ticker": t, "side":"sell", "target": amt, "executed": executed_amt, "fee": fee_amt, "price": exec_price})
-    # then execute buys
+    # buys
     for t, amt in trade_amounts.items():
         if amt > 0:
             executed_amt, fee_amt, exec_price, filled = execute_trade(t, amt)
-            executed_changes[t] += executed_amt  # positive
+            executed_changes[t] += executed_amt
             trade_details.append({"date": date, "ticker": t, "side":"buy", "target": amt, "executed": executed_amt, "fee": fee_amt, "price": exec_price})
 
-    # Apply executed changes to mark_to_market_vals to get new holdings values
-    # sold executed_amt is negative dollar value -> reduce holding; buys increase
-    for t in TICKERS:
-        mark_to_market_vals[t] += executed_changes[t]
+    for t in monthly_prices.columns:
+        mark_to_market_vals[t] += executed_changes.get(t, 0.0)
 
-    # cash after trades:
     cash_after = portfolio_value_before - mark_to_market_vals.sum()
-    # subtract total fees
-    total_fees = sum([d["fee"] for d in trade_details])
+    total_fees = sum([d["fee"] for d in trade_details]) if trade_details else 0.0
     cash_after -= total_fees
 
-    # set histories
     holdings_history.loc[date] = mark_to_market_vals
     cash_history.loc[date] = cash_after
     nav.loc[date] = mark_to_market_vals.sum() + cash_after
 
-    # record trades
     for d in trade_details:
         trade_log.append(d)
 
-    # compute realized monthly return for reporting (net of costs)
     prev_nav_val = prev_nav
     cur_nav_val = nav.loc[date]
-    realized_ret = (cur_nav_val / prev_nav_val) - 1
+    realized_ret = (cur_nav_val / prev_nav_val) - 1 if prev_nav_val != 0 else 0.0
     portfolio_returns_hist.append(realized_ret)
 
-    # update last_weights for next iteration (approx from holdings values)
     last_weights = (holdings_history.loc[date] / nav.loc[date]).fillna(0.0)
 
 # -----------------------------
 # 回测结果与统计
 # -----------------------------
-# fill initial nav if zero
 nav = nav.fillna(method="ffill")
 nav.iloc[0] = START_USD
 
@@ -386,7 +393,6 @@ ann_vol = np.std(portfolio_returns_hist) * np.sqrt(12) if len(portfolio_returns_
 sharpe = cagr / ann_vol if ann_vol>0 else np.nan
 md, dd_series = max_drawdown(cum_returns)
 
-# print summary
 print("Backtest summary:")
 print(f"Period: {nav.index[0].date()} to {nav.index[-1].date()}")
 print(f"Start USD: {START_USD:.2f}, End USD: {nav.iloc[-1]:.2f}")
@@ -398,7 +404,9 @@ print(f"CAGR: {cagr:.2%}, Ann Vol: {ann_vol:.2%}, Sharpe: {sharpe:.3f}, MaxDD: {
 def subperiod_stats(nav_series, window_years=5):
     stats = []
     months_window = int(window_years * 12)
-    for start in range(0, len(nav_series)-months_window+1, 12):  # step 12 months
+    if len(nav_series) < months_window:
+        return pd.DataFrame(stats)
+    for start in range(0, len(nav_series)-months_window+1, 12):
         sub = nav_series.iloc[start:start+months_window]
         c = cagr_from_nav(sub)
         md_sub, _ = max_drawdown(sub)
@@ -416,12 +424,10 @@ mc_maxdds = []
 
 horizon_months = int(MONTE_CARLO_HORIZON_YEARS * 12)
 for run in range(MONTE_CARLO_RUNS):
-    # bootstrap sample of monthly returns
     sample = np.random.choice(monthly_rets.values, size=horizon_months, replace=True)
     nav_mc = np.ones(horizon_months+1)
     for j in range(horizon_months):
         nav_mc[j+1] = nav_mc[j] * (1 + sample[j])
-    # compute CAGR and MaxDD for this run
     years = MONTE_CARLO_HORIZON_YEARS
     cagr_mc = nav_mc[-1] ** (1.0/years) - 1
     roll_max = np.maximum.accumulate(nav_mc)
@@ -433,20 +439,17 @@ for run in range(MONTE_CARLO_RUNS):
 # -----------------------------
 # 绘图与邮件正文构建
 # -----------------------------
-# NAV plot
 fig_nav, ax = plt.subplots(figsize=(10,6))
 cum_returns.plot(ax=ax)
 ax.set_title("策略累计净值 (normalized)")
 ax.set_ylabel("Normalized NAV")
 img_nav = fig_to_base64(fig_nav)
 
-# drawdown plot
 fig_dd, ax = plt.subplots(figsize=(10,6))
 dd_series.plot(ax=ax, color='red')
 ax.set_title("策略回撤")
 img_dd = fig_to_base64(fig_dd)
 
-# Monte Carlo histograms
 fig_mc, ax = plt.subplots(1,2, figsize=(12,5))
 ax[0].hist(mc_cagrs, bins=30)
 ax[0].set_title("Monte Carlo CAGR Distribution")
@@ -454,16 +457,13 @@ ax[1].hist(mc_maxdds, bins=30)
 ax[1].set_title("Monte Carlo MaxDD Distribution")
 img_mc = fig_to_base64(fig_mc)
 
-# trade log DataFrame
 trade_df = pd.DataFrame(trade_log)
 if not trade_df.empty:
     trade_df['date'] = pd.to_datetime(trade_df['date'])
     trade_df = trade_df.sort_values('date')
 
-# holdings snapshot latest
 holdings_snapshot = holdings_history.loc[dates[-1]]
 
-# Build HTML email
 body_html = f"""
 <h3>高级月度动能轮动策略回测报告</h3>
 <p>回测区间: {nav.index[0].date()} - {nav.index[-1].date()}<br>
@@ -472,10 +472,10 @@ CAGR: {cagr:.2%} &nbsp; AnnVol: {ann_vol:.2%} &nbsp; Sharpe: {sharpe:.2f} &nbsp;
 <h4>本月建议 (Top-{NUM_HOLD}, exposure scale={final_exposure:.2f})</h4>
 <ul>
 """
-# note: 'selected' and 'weights' currently reflect last loop values
+# 'selected' and 'weights' here are from last loop iteration
 for t in selected:
-    w = weights.get(t, 0.0)
-    alloc_usd = START_USD * w * final_exposure
+    w = float(weights.get(t, 0.0)) if isinstance(weights, (pd.Series, dict)) else 0.0
+    alloc_usd = (START_USD * (1 - TRANSACTION_COST)) * w * final_exposure
     body_html += f"<li>{t}: weight {w:.3f}, est allocation ${alloc_usd:,.2f}</li>"
 body_html += "</ul>"
 
@@ -485,7 +485,6 @@ body_html += f"<img src='data:image/png;base64,{img_nav}'><br>"
 body_html += f"<img src='data:image/png;base64,{img_dd}'><br>"
 body_html += f"<h4>蒙特卡洛样本（{MONTE_CARLO_RUNS} 次）</h4><img src='data:image/png;base64,{img_mc}'><br>"
 
-# attach trade log as CSV string
 if not trade_df.empty:
     csv_buf = io.StringIO()
     trade_df.to_csv(csv_buf, index=False)
@@ -505,7 +504,6 @@ def send_email(subject, html_body, attachments=None):
     msg["To"] = Header(", ".join(EMAIL_RECIPIENTS), "utf-8")
     msg["Subject"] = Header(subject, "utf-8")
     msg.attach(MIMEText(html_body, "html", "utf-8"))
-    # attachments: dict of filename->content
     if attachments:
         from email.mime.base import MIMEBase
         from email import encoders
@@ -526,7 +524,6 @@ def send_email(subject, html_body, attachments=None):
         print("Email send failed:", e)
         traceback.print_exc()
 
-# auto-send if email configured
 send_email("Momentum Strategy Monthly Report (Advanced)", body_html, attachments={"trade_log.csv": trade_csv})
 
 # -----------------------------
@@ -540,9 +537,4 @@ if not trade_df.empty:
 holdings_history.to_csv(os.path.join(out_dir,"holdings_history.csv"))
 pd.DataFrame({"mc_cagr": mc_cagrs, "mc_maxdd": mc_maxdds}).to_csv(os.path.join(out_dir,"monte_carlo.csv"), index=False)
 
-
 print("Finished. Files saved to", out_dir)
-
-
-
-
