@@ -149,7 +149,7 @@ cash_history = pd.Series(0.0, index=dates)
 trade_log = []  # list of dicts
 
 # for realized returns calculation use monthly returns of assets
-asset_ret_monthly = monthly_price.pct_change().fillna(0)
+asset_ret_monthly = monthly_prices.pct_change().fillna(0)
 
 # rolling realized vol (annualized) for volatility targeting window: use 12-months
 vol_rolling = asset_ret_monthly.rolling(12).std() * np.sqrt(12)
@@ -539,5 +539,6 @@ pd.DataFrame({"mc_cagr": mc_cagrs, "mc_maxdd": mc_maxdds}).to_csv(os.path.join(o
 
 
 print("Finished. Files saved to", out_dir)
+
 
 
