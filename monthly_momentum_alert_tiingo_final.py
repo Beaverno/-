@@ -30,7 +30,7 @@ from email.header import Header
 # -------------------------
 # Defaults / params (can override with env)
 # -------------------------
-TICKERS = os.environ.get("TICKERS", "SPY,QQQ,VOO,VT,EFA,EEM,TLT,GLD").split(",")
+TICKERS = os.environ.get("TICKERS", "SPY,QQQ,VOO,VT,EFA,EEM,TLT,GLD,SHY").split(",")
 RISK_FREE = os.environ.get("RISK_FREE", "SHY").split(",")
 NUM_HOLD = int(os.environ.get("NUM_HOLD", 3))
 FEE_RATE = float(os.environ.get("FEE_RATE", 0.001))        # 默认 0.1%
@@ -440,5 +440,6 @@ if not trade_df.empty:
 pd.DataFrame({"mc_cagr": mc_cagrs, "mc_maxdd": mc_maxdds}).to_csv(os.path.join(out_dir,"monte_carlo.csv"), index=False)
 
 print("Finished. Files saved to", out_dir)
+
 
 
