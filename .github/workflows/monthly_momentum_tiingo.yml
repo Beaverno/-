@@ -1,0 +1,40 @@
+name: Monthly Momentum (Tiingo) - Final
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 1 * *"  # 每月1号 08:00 UTC（可按需改）
+
+jobs:
+  run-strategy:
+    runs-on: ubuntu-latest
+    env:
+      TICKERS: SPY,QQQ,VOO,VT,EFA,EEM,TLT,GLD
+      NUM_HOLD: "3"
+      RMB_CAPITAL: "650000"
+      USD_RMB_RATE: "7.1"
+      TIINGO_TOKEN: ${{ secrets.TIINGO_TOKEN }}
+      EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+      EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+      SMTP_PROVIDER: "qq"
+      OUTPUT_DIR: "./output"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install dependencies (compatible pins)
+        run: |
+          pip install "numpy<2.0.0" pandas matplotlib requests
+
+      - name: Run strategy
+        run: python monthly_momentum_alert_tiingo_final.py
