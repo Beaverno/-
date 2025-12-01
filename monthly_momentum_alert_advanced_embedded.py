@@ -4,7 +4,7 @@
 monthly_momentum_alert_advanced_embedded.py
 
 升级版月度动能轮动策略 + 邮件回测图嵌入正文
-（修复 KeyError、空仓保护和中文字体问题）
+（兼容 GitHub Actions，修复中文字体和 ZeroDivisionError）
 """
 
 import os
@@ -24,9 +24,9 @@ import base64
 import traceback
 
 # ---------------------------
-# 中文字体支持
+# Matplotlib 配置
 # ---------------------------
-matplotlib.rcParams['font.sans-serif'] = ['SimHei']
+matplotlib.rcParams['font.sans-serif'] = ['DejaVu Sans']  # 默认可用字体
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 # ---------------------------
@@ -111,9 +111,9 @@ for i in range(1, len(monthly_prices)):
     if last_hold is None:
         last_hold = selected
     
-    turnover = len(set(selected) ^ set(last_hold)) / NUM_HOLD
+    turnover = len(set(selected) ^ set(last_hold)) / max(NUM_HOLD,1)
     cost = turnover * TRANSACTION_COST
-    monthly_ret = monthly_prices.loc[monthly_prices.index[i], selected].pct_change().mean()
+    monthly_ret = monthly_prices.loc[monthly_prices.index[i], selected].pct_change().mean() if selected else 0
     portfolio_value.iloc[i] = portfolio_value.iloc[i-1]*(1 + monthly_ret - cost)
     last_hold = selected
 
@@ -151,10 +151,13 @@ trend_ok = monthly_prices.iloc[-1] > latest_sma
 eligible = [t for t in latest_score.index if trend_ok.get(t, False)]
 selected = [t for t in latest_score.index if t in eligible][:NUM_HOLD]
 
-# 空仓保护：如果 benchmark 不存在则取第一个可用 ETF
+# 空仓保护 + 防止 division by zero
 benchmark = "SPY" if "SPY" in monthly_prices.columns else monthly_prices.columns[0]
 if (monthly_prices[benchmark].iloc[-1] - monthly_prices[benchmark].shift(MOM_12M).iloc[-1])/monthly_prices[benchmark].shift(MOM_12M).iloc[-1] < 0:
     selected = RISK_FREE
+
+if len(selected) == 0:
+    selected = [monthly_prices.columns[0]]  # fallback
 
 allocation = 1.0 / len(selected)
 capital_after_cost = usd_capital * (1 - TRANSACTION_COST)
