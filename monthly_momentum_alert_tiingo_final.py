@@ -94,7 +94,11 @@ def compute_fee(amount_usd):
 def tiingo_price_series(ticker, start=START_DATE, end=None, max_retry=4, wait=2):
     url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
     headers = {"Content-Type": "application/json"}
-    params = {"token": TIINGO_TOKEN}
+    params = {
+    "token": TIINGO_TOKEN,
+    "startDate": start,
+    "endDate": end
+}
     attempt = 0
     while attempt < max_retry:
         try:
@@ -436,4 +440,5 @@ if not trade_df.empty:
 pd.DataFrame({"mc_cagr": mc_cagrs, "mc_maxdd": mc_maxdds}).to_csv(os.path.join(out_dir,"monte_carlo.csv"), index=False)
 
 print("Finished. Files saved to", out_dir)
+
 
