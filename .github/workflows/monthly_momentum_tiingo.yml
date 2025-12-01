@@ -9,7 +9,7 @@ jobs:
   run-strategy:
     runs-on: ubuntu-latest
     env:
-      START_DATE: "2023-12-30"
+      START_DATE: "2020-12-30"
       TICKERS: SPY,QQQ,VOO,VT,EFA,EEM,TLT,GLD
       NUM_HOLD: "3"
       RMB_CAPITAL: "650000"
