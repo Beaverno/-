@@ -126,6 +126,9 @@ def simulate_limit_fill(limit_price, market_price, fill_prob):
 # -----------------------------
 # 下载价格数据
 # -----------------------------
+monthly_prices = pd.DataFrame()
+for t in TICKERS:
+    monthly_prices[t] = tiingo_price(t).resample('M').last()
 def tiingo_price(ticker):
     url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
     headers = {"Content-Type": "application/json"}
@@ -169,10 +172,10 @@ for i in range(1, n_months):
     prices_prev = monthly_prices.loc[prev_date]
 
     # 1) 计算多周期动能（1/3/6/12）
-    mom1 = (prices_now - monthly_prices.shift(1).loc[date]) / monthly_price.shift(1).loc[date]
-    mom3 = (prices_now - monthly_prices.shift(3).loc[date]) / monthly_price.shift(3).loc[date]
-    mom6 = (prices_now - monthly_prices.shift(6).loc[date]) / monthly_price.shift(6).loc[date]
-    mom12 = (prices_now - monthly_prices.shift(12).loc[date]) / monthly_price.shift(12).loc[date]
+    mom1 = (prices_now - monthly_prices.shift(1).loc[date]) / monthly_prices.shift(1).loc[date]
+    mom3 = (prices_now - monthly_prices.shift(3).loc[date]) / monthly_prices.shift(3).loc[date]
+    mom6 = (prices_now - monthly_prices.shift(6).loc[date]) / monthly_prices.shift(6).loc[date]
+    mom12 = (prices_now - monthly_prices.shift(12).loc[date]) / monthly_prices.shift(12).loc[date]
     acc = mom1 - mom3  # 动能加速度
 
     # avoid NaN by filling with -inf (push to bottom)
@@ -472,7 +475,7 @@ CAGR: {cagr:.2%} &nbsp; AnnVol: {ann_vol:.2%} &nbsp; Sharpe: {sharpe:.2f} &nbsp;
 # note: 'selected' and 'weights' currently reflect last loop values
 for t in selected:
     w = weights.get(t, 0.0)
-    alloc_usd = (START_USD * (1 - TRANSACTION_COST)) * w * final_exposure
+    alloc_usd = START_USD * w * final_exposure
     body_html += f"<li>{t}: weight {w:.3f}, est allocation ${alloc_usd:,.2f}</li>"
 body_html += "</ul>"
 
@@ -539,6 +542,7 @@ pd.DataFrame({"mc_cagr": mc_cagrs, "mc_maxdd": mc_maxdds}).to_csv(os.path.join(o
 
 
 print("Finished. Files saved to", out_dir)
+
 
 
 
