@@ -139,7 +139,7 @@ def tiingo_price(ticker):
 # -----------------------------
 # 回测框架状态变量
 # -----------------------------
-dates = monthly_price.index
+dates = monthly_prices.index
 n_months = len(dates)
 nav = pd.Series(index=dates, dtype=float)
 nav.iloc[0] = START_USD
@@ -165,14 +165,14 @@ last_weights = pd.Series(0.0, index=TICKERS)
 for i in range(1, n_months):
     date = dates[i]
     prev_date = dates[i-1]
-    prices_now = monthly_price.loc[date]
-    prices_prev = monthly_price.loc[prev_date]
+    prices_now = monthly_prices.loc[date]
+    prices_prev = monthly_prices.loc[prev_date]
 
     # 1) 计算多周期动能（1/3/6/12）
-    mom1 = (prices_now - monthly_price.shift(1).loc[date]) / monthly_price.shift(1).loc[date]
-    mom3 = (prices_now - monthly_price.shift(3).loc[date]) / monthly_price.shift(3).loc[date]
-    mom6 = (prices_now - monthly_price.shift(6).loc[date]) / monthly_price.shift(6).loc[date]
-    mom12 = (prices_now - monthly_price.shift(12).loc[date]) / monthly_price.shift(12).loc[date]
+    mom1 = (prices_now - monthly_prices.shift(1).loc[date]) / monthly_price.shift(1).loc[date]
+    mom3 = (prices_now - monthly_prices.shift(3).loc[date]) / monthly_price.shift(3).loc[date]
+    mom6 = (prices_now - monthly_prices.shift(6).loc[date]) / monthly_price.shift(6).loc[date]
+    mom12 = (prices_now - monthly_prices.shift(12).loc[date]) / monthly_price.shift(12).loc[date]
     acc = mom1 - mom3  # 动能加速度
 
     # avoid NaN by filling with -inf (push to bottom)
@@ -196,16 +196,16 @@ for i in range(1, n_months):
     score = score.sort_values(ascending=False)
 
     # 4) trend filter (SMA)
-    sma = monthly_price.rolling(SMA_WINDOW).mean().loc[date]
+    sma = monthly_prices.rolling(SMA_WINDOW).mean().loc[date]
     trend_ok = prices_now > sma
 
     eligible = [t for t in score.index if trend_ok.get(t, False)]
     selected = [t for t in score.index if t in eligible][:NUM_HOLD]
 
     # dynamic cash/empty threshold: if market (benchmark) short and medium term both negative => reduce exposure
-    benchmark = "SPY" if "SPY" in monthly_price.columns else monthly_price.columns[0]
-    bench_mom3 = (prices_now[benchmark] - monthly_price.shift(3).loc[date][benchmark]) / monthly_price.shift(3).loc[date][benchmark]
-    bench_mom12 = (prices_now[benchmark] - monthly_price.shift(12).loc[date][benchmark]) / monthly_price.shift(12).loc[date][benchmark]
+    benchmark = "SPY" if "SPY" in monthly_prices.columns else monthly_price.columns[0]
+    bench_mom3 = (prices_now[benchmark] - monthly_prices.shift(3).loc[date][benchmark]) / monthly_prices.shift(3).loc[date][benchmark]
+    bench_mom12 = (prices_now[benchmark] - monthly_prices.shift(12).loc[date][benchmark]) / monthly_prices.shift(12).loc[date][benchmark]
 
     exposure_scale = 1.0
     # if both short and medium term negative -> heavy defense
@@ -539,4 +539,5 @@ pd.DataFrame({"mc_cagr": mc_cagrs, "mc_maxdd": mc_maxdds}).to_csv(os.path.join(o
 
 
 print("Finished. Files saved to", out_dir)
+
 
