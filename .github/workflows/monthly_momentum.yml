@@ -1,0 +1,57 @@
+name: Monthly Momentum Alert
+
+on:
+  schedule:
+    # 每月 1 号凌晨 5 点 UTC（对应台湾时间 13:00）
+    - cron: '0 5 1 * *'
+  workflow_dispatch:
+
+jobs:
+  run-momentum-strategy:
+    runs-on: ubuntu-latest
+
+    env:
+      START_DATE: "2005-01-01"
+      END_DATE: ""
+      TICKERS: "SPY,QQQ,VOO,VT,EFA,EEM,TLT,GLD"
+      NUM_HOLD: 3
+      RISK_FREE: "SHY"
+      FEE_RATE: 0.001
+      SLIPPAGE_BASE: 0.0005
+      TARGET_VOL: 0.10
+      MAX_LEVER: 2.0
+      SMA_WINDOW: 200
+      MONTE_CARLO_RUNS: 500
+      MONTE_CARLO_HORIZON_YEARS: 5
+      RMB_CAPITAL: 650000
+      USD_RMB_RATE: 7.1
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy matplotlib yfinance
+
+      - name: Run monthly momentum script
+        env:
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+        run: |
+          python monthly_momentum_alert_yfinance_final.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: momentum-output
+          path: |
+            nav.csv
+            trade_log.csv
