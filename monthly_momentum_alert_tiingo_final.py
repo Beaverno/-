@@ -115,29 +115,47 @@ def simulate_limit_fill(limit_price, market_price, fill_prob):
 # -----------------------------
 # Tiingo download with retry (returns Series)
 # -----------------------------
-def tiingo_price(ticker, start=START_DATE, end=END_DATE, max_retry=4, wait=3):
-    for attempt in range(max_retry):
+def download_tiingo_price(ticker, start_date, end_date, max_retries=4):
+    url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
+    headers = {"Content-Type": "application/json"}
+
+    params = {
+        "token": TIINGO_TOKEN,
+        "startDate": start_date.strftime("%Y-%m-%d"),
+        "endDate": end_date.strftime("%Y-%m-%d"),
+        "resampleFreq": "daily"
+    }
+
+    for attempt in range(1, max_retries + 1):
         try:
-            url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
-            params = {"token": TIINGO_TOKEN}
-            r = requests.get(url, params=params, timeout=15)
-            r.raise_for_status()
-            df = pd.DataFrame(r.json())
-            if df.empty:
-                raise RuntimeError(f"{ticker} returned empty")
-            df["date"] = pd.to_datetime(df["date"])
+            r = requests.get(url, headers=headers, params=params, timeout=20)
+
+            if r.status_code != 200:
+                raise ValueError(f"HTTP {r.status_code}: {r.text}")
+
+            data = r.json()
+            if not data:
+                raise ValueError("Empty response")
+
+            df = pd.DataFrame(data)
+
+            df["date"] = pd.to_datetime(df["date"], utc=True)
             df.set_index("date", inplace=True)
-            s = df["adjClose"].sort_index()
-            # optionally trim by start/end if present in env
-            if start:
-                s = s[s.index >= pd.to_datetime(start)]
-            if end:
-                s = s[s.index <= pd.to_datetime(end)]
-            return s
+
+            # ---- 🔥 FIX: remove timezone to avoid comparison error ----
+            df.index = df.index.tz_localize(None)
+
+            # Keep only close price
+            df = df[["close"]]
+
+            return df
+
         except Exception as e:
-            print(f"Tiingo {ticker} download failed (attempt {attempt+1}/{max_retry}): {e}")
-            time.sleep(wait)
-    raise RuntimeError(f"Failed to download {ticker} after {max_retry} attempts")
+            print(f"Tiingo {ticker} download failed (attempt {attempt}/{max_retries}): {e}")
+            time.sleep(2)
+
+    print(f"Failed to download {ticker} after {max_retries} attempts")
+    return None
 
 # -----------------------------
 # Build monthly_prices DataFrame
@@ -470,3 +488,4 @@ holdings_history.to_csv(os.path.join(out_dir,"holdings_history.csv"))
 pd.DataFrame({"mc_cagr": mc_cagrs, "mc_maxdd": mc_maxdds}).to_csv(os.path.join(out_dir,"monte_carlo.csv"), index=False)
 
 print("Finished. Files saved to", out_dir)
+
