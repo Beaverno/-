@@ -3,7 +3,7 @@ name: Momentum Strategy
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 1 * *'
+    - cron: '0 8 1 * *'
 
 jobs:
   run:
@@ -31,5 +31,6 @@ jobs:
           RMB_CAPITAL: ${{ secrets.RMB_CAPITAL }}
           USD_RMB_RATE: ${{ secrets.USD_RMB_RATE }}
           SMTP_PROVIDER: ${{ secrets.SMTP_PROVIDER }}
+          TIINGO_TOKEN: ${{ secrets.TIINGO_TOKEN }}
         run: |
           python monthly_momentum_alert_optimized.py
