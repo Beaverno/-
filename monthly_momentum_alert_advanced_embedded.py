@@ -4,7 +4,7 @@
 monthly_momentum_alert_advanced_embedded.py
 
 升级版月度动能轮动策略 + 邮件回测图嵌入正文
-（修复 yfinance KeyError 问题）
+（修复 KeyError、空仓保护和中文字体问题）
 """
 
 import os
@@ -13,15 +13,21 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
+import matplotlib
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.image import MIMEImage
 from email.header import Header
 import ssl
 import io
 import base64
 import traceback
+
+# ---------------------------
+# 中文字体支持
+# ---------------------------
+matplotlib.rcParams['font.sans-serif'] = ['SimHei']
+matplotlib.rcParams['axes.unicode_minus'] = False
 
 # ---------------------------
 # 参数设置
@@ -64,19 +70,23 @@ else:
     raise ValueError("不支持的 SMTP_PROVIDER (支持: qq, 163, gmail)")
 
 # ---------------------------
-# 下载数据，直接使用调整后价格（解决 KeyError）
+# 下载数据，直接使用调整后价格，填充缺失值
 # ---------------------------
 end_date = datetime.today().strftime("%Y-%m-%d")
 data = yf.download(TICKERS, start="2010-01-01", end=end_date, auto_adjust=True, progress=False)
 if data.empty:
     raise RuntimeError("未下载到数据，请检查网络或标的")
 
-adj_close = data.dropna(how='all')  # 已是调整后收盘价，直接使用
+adj_close = data.ffill().bfill()  # 填充缺失值，保留所有列
+
+# ---------------------------
+# 月度重采样
+# ---------------------------
+monthly_prices = adj_close.resample('ME').last()  # ME 替代过期的 'M'
 
 # ---------------------------
 # 回测逻辑
 # ---------------------------
-monthly_prices = adj_close.resample('M').last()
 portfolio_value = pd.Series(index=monthly_prices.index, dtype=float)
 portfolio_value.iloc[0] = usd_capital
 last_hold = None
@@ -141,7 +151,9 @@ trend_ok = monthly_prices.iloc[-1] > latest_sma
 eligible = [t for t in latest_score.index if trend_ok.get(t, False)]
 selected = [t for t in latest_score.index if t in eligible][:NUM_HOLD]
 
-if (monthly_prices['SPY'].iloc[-1] - monthly_prices['SPY'].shift(MOM_12M).iloc[-1])/monthly_prices['SPY'].shift(MOM_12M).iloc[-1] < 0:
+# 空仓保护：如果 benchmark 不存在则取第一个可用 ETF
+benchmark = "SPY" if "SPY" in monthly_prices.columns else monthly_prices.columns[0]
+if (monthly_prices[benchmark].iloc[-1] - monthly_prices[benchmark].shift(MOM_12M).iloc[-1])/monthly_prices[benchmark].shift(MOM_12M).iloc[-1] < 0:
     selected = RISK_FREE
 
 allocation = 1.0 / len(selected)
